@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Secure Image Redactor</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        body {
+            background-color: #0f172a; /* Slate 900 */
+            color: #e2e8f0; /* Slate 200 */
+        }
+        /* Background pattern for the workspace */
+        #workspace {
+            background-image: 
+                linear-gradient(45deg, #1e293b 25%, transparent 25%), 
+                linear-gradient(-45deg, #1e293b 25%, transparent 25%), 
+                linear-gradient(45deg, transparent 75%, #1e293b 75%), 
+                linear-gradient(-45deg, transparent 75%, #1e293b 75%);
+            background-size: 20px 20px;
+            background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+        }
+        canvas {
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
+            transition: box-shadow 0.2s;
+            transform-origin: center;
+        }
+        .tool-btn {
+            transition: all 0.2s;
+        }
+        .tool-btn:active {
+            transform: scale(0.95);
+        }
+        /* Cursors */
+        .cursor-pan {
+            cursor: grab !important;
+        }
+        .cursor-panning {
+            cursor: grabbing !important;
+        }
+    </style>
+</head>
+<body class="h-screen flex flex-col overflow-hidden font-sans select-none">
+
+    <!-- Header / Toolbar -->
+    <header class="bg-slate-800 border-b border-slate-700 p-4 flex items-center justify-between shadow-lg z-20 shrink-0">
+        <div class="flex items-center gap-3">
+            <div class="bg-red-600 text-white w-8 h-8 rounded flex items-center justify-center font-bold">
+                <i class="fa-solid fa-user-secret"></i>
+            </div>
+            <div>
+                <h1 class="font-bold text-lg leading-tight text-white">Redact<span class="text-red-500">.io</span></h1>
+                <p class="text-xs text-slate-400">Secure Client-Side Image Redaction</p>
+            </div>
+        </div>
+
+        <div class="flex items-center gap-4">
+            <!-- File Input (Hidden) -->
+            <input type="file" id="fileInput" accept="image/*" class="hidden">
+            
+            <button onclick="document.getElementById('fileInput').click()" class="tool-btn bg-slate-700 hover:bg-slate-600 text-white px-4 py-2 rounded-md border border-slate-600 flex items-center gap-2 text-sm font-medium">
+                <i class="fa-solid fa-upload"></i> Upload Image
+            </button>
+
+            <div class="h-8 w-px bg-slate-600 mx-2"></div>
+
+            <button onclick="undo()" id="btnUndo" disabled class="tool-btn bg-slate-700 hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed text-white px-3 py-2 rounded-md border border-slate-600 text-sm" title="Undo (Ctrl+Z)">
+                <i class="fa-solid fa-rotate-left"></i>
+            </button>
+            
+            <button onclick="clearAll()" id="btnClear" disabled class="tool-btn bg-slate-700 hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed text-white px-3 py-2 rounded-md border border-slate-600 text-sm" title="Clear All">
+                <i class="fa-solid fa-trash"></i>
+            </button>
+            
+            <button onclick="resetView()" id="btnResetView" disabled class="tool-btn bg-slate-700 hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed text-white px-3 py-2 rounded-md border border-slate-600 text-sm" title="Reset View">
+                <i class="fa-solid fa-expand"></i>
+            </button>
+
+            <div class="h-8 w-px bg-slate-600 mx-2"></div>
+
+            <button onclick="saveImage()" id="btnSave" disabled class="tool-btn bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white px-6 py-2 rounded-md shadow-lg shadow-blue-900/50 flex items-center gap-2 text-sm font-bold">
+                <i class="fa-solid fa-download"></i> Save Redacted
+            </button>
+        </div>
+    </header>
+
+    <!-- Main Workspace -->
+    <main class="flex-1 relative overflow-hidden bg-slate-900 flex items-center justify-center" id="workspace">
+        
+        <!-- Empty State -->
+        <div id="emptyState" class="text-center z-10 pointer-events-none">
+            <div class="w-24 h-24 bg-slate-800 rounded-full flex items-center justify-center mx-auto mb-4 border-2 border-dashed border-slate-600 text-slate-500 pointer-events-auto">
+                <i class="fa-regular fa-image text-4xl"></i>
+            </div>
+            <h2 class="text-xl font-semibold text-slate-300">No Image Loaded</h2>
+            <p class="text-slate-500 mt-2 max-w-sm mx-auto">Upload a screenshot or photo to start redacting.</p>
+            <button onclick="document.getElementById('fileInput').click()" class="mt-6 text-blue-400 hover:text-blue-300 underline cursor-pointer pointer-events-auto">Browse files</button>
+        </div>
+
+        <!-- Canvas Container -->
+        <div id="canvasContainer" class="hidden absolute top-0 left-0 w-full h-full overflow-hidden flex items-center justify-center">
+            <!-- The canvas itself -->
+            <canvas id="canvas" class="cursor-crosshair block rounded-sm"></canvas>
+            
+            <!-- Floating Overlay Instructions -->
+            <div class="absolute bottom-6 bg-slate-800/80 backdrop-blur text-slate-300 px-4 py-2 rounded-full text-xs shadow-lg border border-slate-600 pointer-events-none z-20">
+                <span class="font-bold text-white">Left Click</span> to Redact &nbsp;&bull;&nbsp; <span class="font-bold text-white">Ctrl + Drag</span> to Pan Image
+            </div>
+        </div>
+
+    </main>
+
+    <!-- Scripts -->
+    <script>
+        const fileInput = document.getElementById('fileInput');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const emptyState = document.getElementById('emptyState');
+        const canvasContainer = document.getElementById('canvasContainer');
+        const btnSave = document.getElementById('btnSave');
+        const btnUndo = document.getElementById('btnUndo');
+        const btnClear = document.getElementById('btnClear');
+        const btnResetView = document.getElementById('btnResetView');
+
+        // State
+        let img = new Image();
+        let redactions = []; // Array of rect objects {x, y, w, h}
+        let imageLoaded = false;
+        
+        // Drawing State
+        let isDrawing = false;
+        let drawStartX, drawStartY;
+        let currentRect = null;
+
+        // Panning State
+        let isPanning = false;
+        let panStartX = 0;
+        let panStartY = 0;
+        let translateX = 0;
+        let translateY = 0;
+        let scale = 1; // Future proofing for zoom
+
+        // --- File Handling ---
+        fileInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            loadFile(file);
+        });
+
+        function loadFile(file) {
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                img = new Image();
+                img.onload = () => {
+                    initCanvas();
+                };
+                img.src = event.target.result;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function initCanvas() {
+            // Set canvas resolution to match image
+            canvas.width = img.width;
+            canvas.height = img.height;
+
+            // Reset view state
+            translateX = 0;
+            translateY = 0;
+            scale = 1;
+            redactions = [];
+            imageLoaded = true;
+            
+            // Initial Style: Fit visually within the workspace
+            updateCanvasTransform();
+            
+            // Limit CSS size initially to fit screen, but allow transform to move it
+            // We set max-width/height to constrain it initially, but Panning breaks this constraint visually via transform
+            canvas.style.maxWidth = '90%';
+            canvas.style.maxHeight = '90%';
+
+            // UI Updates
+            emptyState.classList.add('hidden');
+            canvasContainer.classList.remove('hidden');
+            updateButtons();
+            
+            draw();
+        }
+
+        function updateCanvasTransform() {
+            canvas.style.transform = `translate(${translateX}px, ${translateY}px) scale(${scale})`;
+        }
+
+        function resetView() {
+            if(!imageLoaded) return;
+            translateX = 0;
+            translateY = 0;
+            scale = 1;
+            updateCanvasTransform();
+        }
+
+        // --- Interaction Logic ---
+
+        // Helper: Convert client coordinates (screen pixels) to canvas coordinates (image pixels)
+        // This handles the complexity of CSS Transforms and scaling
+        function getCanvasCoordinates(e) {
+            const rect = canvas.getBoundingClientRect();
+            
+            // Scale factor between rendered size and actual bitmap size
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+
+            return {
+                x: (e.clientX - rect.left) * scaleX,
+                y: (e.clientY - rect.top) * scaleY
+            };
+        }
+
+        canvas.addEventListener('mousedown', (e) => {
+            if (!imageLoaded) return;
+
+            if (e.ctrlKey || e.button === 1) { // Ctrl + Left Click OR Middle Click
+                // Start Panning
+                isPanning = true;
+                panStartX = e.clientX - translateX;
+                panStartY = e.clientY - translateY;
+                canvas.classList.add('cursor-panning');
+                canvas.classList.remove('cursor-crosshair');
+            } else {
+                // Start Drawing Redaction
+                isDrawing = true;
+                const pos = getCanvasCoordinates(e);
+                drawStartX = pos.x;
+                drawStartY = pos.y;
+                currentRect = { x: drawStartX, y: drawStartY, w: 0, h: 0 };
+            }
+        });
+
+        window.addEventListener('mousemove', (e) => {
+            if (!imageLoaded) return;
+
+            if (isPanning) {
+                e.preventDefault(); // Prevent text selection etc
+                translateX = e.clientX - panStartX;
+                translateY = e.clientY - panStartY;
+                updateCanvasTransform();
+                return;
+            }
+
+            if (isDrawing) {
+                const pos = getCanvasCoordinates(e);
+                const w = pos.x - drawStartX;
+                const h = pos.y - drawStartY;
+                currentRect = { x: drawStartX, y: drawStartY, w: w, h: h };
+                draw();
+            }
+        });
+
+        window.addEventListener('mouseup', () => {
+            if (isPanning) {
+                isPanning = false;
+                canvas.classList.remove('cursor-panning');
+                checkCursorState();
+                return;
+            }
+
+            if (isDrawing) {
+                isDrawing = false;
+                if (currentRect && Math.abs(currentRect.w) > 2 && Math.abs(currentRect.h) > 2) {
+                    // Normalize rect (handle negative width/height)
+                    const finalRect = {
+                        x: currentRect.w < 0 ? currentRect.x + currentRect.w : currentRect.x,
+                        y: currentRect.h < 0 ? currentRect.y + currentRect.h : currentRect.y,
+                        w: Math.abs(currentRect.w),
+                        h: Math.abs(currentRect.h)
+                    };
+                    redactions.push(finalRect);
+                }
+                currentRect = null;
+                updateButtons();
+                draw();
+            }
+        });
+
+        // Key listeners for Cursor Feedback
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'Control') {
+                checkCursorState(true);
+            }
+            // Undo shortcut
+            if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+                e.preventDefault();
+                undo();
+            }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            if (e.key === 'Control') {
+                checkCursorState(false);
+            }
+        });
+
+        function checkCursorState(forceCtrl) {
+            // Check current key state or forced state
+            if (forceCtrl || window.event?.ctrlKey) {
+                canvas.classList.add('cursor-pan');
+                canvas.classList.remove('cursor-crosshair');
+            } else {
+                canvas.classList.remove('cursor-pan');
+                canvas.classList.remove('cursor-panning');
+                canvas.classList.add('cursor-crosshair');
+            }
+        }
+
+        // --- Rendering ---
+        function draw() {
+            if (!imageLoaded) return;
+
+            // 1. Draw original image
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(img, 0, 0);
+
+            // 2. Draw committed redactions
+            ctx.fillStyle = '#000000';
+            redactions.forEach(r => {
+                ctx.fillRect(r.x, r.y, r.w, r.h);
+            });
+
+            // 3. Draw active drag rect
+            if (currentRect) {
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+                ctx.fillRect(currentRect.x, currentRect.y, currentRect.w, currentRect.h);
+                ctx.strokeStyle = '#ef4444';
+                // Scale line width inverse to visual scale so it looks consistent
+                const rect = canvas.getBoundingClientRect();
+                const scaleX = canvas.width / rect.width;
+                ctx.lineWidth = 2 * scaleX; 
+                ctx.strokeRect(currentRect.x, currentRect.y, currentRect.w, currentRect.h);
+            }
+        }
+
+        // --- Actions ---
+        function undo() {
+            if (redactions.length > 0) {
+                redactions.pop();
+                draw();
+                updateButtons();
+            }
+        }
+
+        function clearAll() {
+            if (redactions.length > 0 && confirm("Clear all redactions?")) {
+                redactions = [];
+                draw();
+                updateButtons();
+            }
+        }
+
+        function saveImage() {
+            if (!imageLoaded) return;
+            const link = document.createElement('a');
+            link.download = 'redacted_image_' + Date.now() + '.png';
+            link.href = canvas.toDataURL('image/png');
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }
+
+        function updateButtons() {
+            const hasRedactions = redactions.length > 0;
+            btnSave.disabled = !imageLoaded;
+            btnResetView.disabled = !imageLoaded;
+            btnUndo.disabled = !hasRedactions;
+            btnClear.disabled = !hasRedactions;
+        }
+
+        // Drag & Drop
+        window.addEventListener('dragover', (e) => e.preventDefault());
+        window.addEventListener('drop', (e) => {
+            e.preventDefault();
+            if (e.dataTransfer.files[0] && e.dataTransfer.files[0].type.startsWith('image/')) {
+                loadFile(e.dataTransfer.files[0]);
+            }
+        });
+
+    </script>
+</body>
+</html>
